@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  InstanceType:
+    Type: String
+    Default: m5.xlarge
+  ReleaseLabel:
+    Type: String
+    Default: emr-6.3.1
+  SubnetId:
+    Type: String
+    Default:
+  TerminationProtected:
+    Type: String
+    Default: 'false'
+  # EbsRootVolumeSize:
+  #   Type: String
+  CoreInstanceCount:
+    Type: Number
+    Default: 2
+  EmrName:
+    Type: String
+    Default: {your_emr_cluster_name}
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - staging
+    - production
+  ServiceAccessSecurityGroup:
+    Type: String
+    Description: ServiceAccessSecurityGroup
+    Default: {your_service_access_security_group}
+  EmrManagedMasterSecurityGroup:
+    Type: String
+    Description: EmrManagedMasterSecurityGroup
+    Default: {your_emr_managed_master_security_group}
+  EmrManagedSlaveSecurityGroup:
+    Type: String
+    Description: EmrManagedSlaveSecurityGroup
+    Default: {your_emr_managed_slave_security_group}
+  SubnetId:
+    Type: String
+    Default: subnet-c490079d
+    AllowedValues:
+    - {your_subnet_id_1}
+    - {your_subnet_id_2}
+  Market:
+    Type: String
+    Default: ON_DEMAND
+  KeepJobFlowAliveWhenNoSteps:
+    Type: String
+    Default: True
+  KeyName:
+    Type: String
+    Description: ssh Key
+    Default: {your_key_name}
+  LogUri:
+    Type: String
+    Default: {your_s3_log_path}
+  CostTag:
+    Type: String
+    Description: Tag name
+    Default: {your_tag_name}
+  MachineNumber:
+    Type: String
+    Default: machine-1
+    AllowedValues:
+    - machine-1
+    - machine-2
+
+Mappings:
+  IsProductionMap:
+    staging:
+      boolvalue: "False"
+    production:
+      boolvalue: "True"
+
+Resources:
+  EMRCluster:
+    Type: AWS::EMR::Cluster
+    Properties:
+      Name: 
+        Fn::Sub: ${EmrName}-${EnvName}-${MachineNumber}
+      LogUri: !Ref LogUri
+      Applications:
+      - Name: Spark
+      - Name: JupyterEnterpriseGateway
+      Instances:
+        MasterInstanceGroup:
+          InstanceCount: 1
+          InstanceType: !Ref InstanceType
+          Market: !Ref Market
+          Name:
+            Fn::Sub: ${EmrName}-${EnvName}-${MachineNumber}-master-node
+        CoreInstanceGroup:
+          InstanceCount: !Ref CoreInstanceCount
+          InstanceType: !Ref InstanceType
+          Market: !Ref Market
+          Name: 
+            Fn::Sub: ${EmrName}-${EnvName}-${MachineNumber}-core-node
+        TerminationProtected: !Ref TerminationProtected
+        Ec2SubnetId: !Ref SubnetId
+        Ec2KeyName: !Ref KeyName
+        ServiceAccessSecurityGroup: !Ref ServiceAccessSecurityGroup
+        EmrManagedMasterSecurityGroup: !Ref EmrManagedMasterSecurityGroup
+        EmrManagedSlaveSecurityGroup: !Ref EmrManagedSlaveSecurityGroup
+      JobFlowRole: EMR_EC2_DefaultRole
+      ServiceRole: EMR_DefaultRole
+      AutoScalingRole: EMR_AutoScaling_DefaultRole
+      BootstrapActions:
+        - Name: emr bootstrap action
+          ScriptBootstrapAction:
+            Path: Fn::Sub: s3://{bucket}/${EnvName}/deploy/bootstrap-pip-install.sh
+      ReleaseLabel: !Ref ReleaseLabel
+      VisibleToAllUsers: true
+      Tags:
+        - Key: Name
+          Value:  
+            Fn::Sub: ${EmrName}-${EnvName}-${MachineNumber}
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Environment
+          Value: !Ref EnvName
+  
+  EMRTaskInstanceGroup:
+    Type: 'AWS::EMR::InstanceGroupConfig'
+    Properties:
+      InstanceRole: TASK
+      InstanceCount: 0
+      InstanceType: !Ref InstanceType
+      Market: SPOT
+      Name: 
+        Fn::Sub: ${EmrName}-${EnvName}-task-node
+      JobFlowId: !Ref EMRCluster
+      EbsConfiguration: 
+        EbsBlockDeviceConfigs: 
+          - VolumeSpecification:
+              SizeInGB: 100
+              VolumeType: "gp2"
+            VolumesPerInstance: 6
+      AutoScalingPolicy:
+        Constraints:
+          MinCapacity: 2
+          MaxCapacity: 20
+        Rules:
+          - Name: emr-streaming-consumer-scale-out
+            Description: >-
+              Replicates the default scale-out rule in the console for YARN memory.
+            Action:
+              SimpleScalingPolicyConfiguration:
+                AdjustmentType: CHANGE_IN_CAPACITY
+                ScalingAdjustment: 2
+                CoolDown: 300
+            Trigger:
+              CloudWatchAlarmDefinition:
+                ComparisonOperator: LESS_THAN_OR_EQUAL
+                EvaluationPeriods: 2
+                MetricName: YARNMemoryAvailablePercentage
+                Namespace: AWS/ElasticMapReduce
+                Period: 300
+                Threshold: 20
+                Statistic: AVERAGE
+                Unit: PERCENT
+                Dimensions:
+                  - Key: JobFlowId
+                    Value: '${emr.clusterId}'
+          - Name: emr-streaming-consumer-scale-in
+            Description: >-
+              Replicates the default scale-out rule in the console for YARN memory.
+            Action:
+              SimpleScalingPolicyConfiguration:
+                AdjustmentType: CHANGE_IN_CAPACITY
+                ScalingAdjustment: -2
+                CoolDown: 300
+            Trigger:
+              CloudWatchAlarmDefinition:
+                ComparisonOperator: GREATER_THAN_OR_EQUAL
+                EvaluationPeriods: 2
+                MetricName: YARNMemoryAvailablePercentage
+                Namespace: AWS/ElasticMapReduce
+                Period: 300
+                Threshold: 70
+                Statistic: AVERAGE
+                Unit: PERCENT
+                Dimensions:
+                  - Key: JobFlowId
+                    Value: '${emr.clusterId}'
+
+  EMRStep:
+    Type: AWS::EMR::Step
+    Properties:
+      ActionOnFailure: CONTINUE
+      HadoopJarStep: 
+        Args:
+          - spark-submit
+          - --master 
+          - yarn
+          - --deploy-mode
+          - cluster
+          - --packages 
+          - io.delta:delta-core_2.12:0.8.0
+          - --py-files
+          - Fn::Sub: s3://{your-bucket}/${EnvName}/deploy/spark_libs.egg
+          - --files
+          - Fn::Sub: s3://{your-bucket}/${EnvName}/deploy/spark_main.py
+          - --is-production
+          - !Sub 
+            -  ${is_production_val}
+            - is_production_val: !FindInMap [IsProductionMap, !Ref EnvName, boolvalue]
+        Jar: command-runner.jar
+      JobFlowId: !Ref EMRCluster
+      Name: "execute main spark script"
+      
