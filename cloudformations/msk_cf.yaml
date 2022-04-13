@@ -1,0 +1,61 @@
+Description: ETL MSK Cluster with required properties.
+Parameters:
+  EnvName:
+    Type: String
+    Description: Name of an environment. 'dev', 'staging', 'prod' and any name.
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - production
+  CostTag:
+    Type: String
+    Description: cost tag name
+    Default: template-example
+  KafkaInstanceType:
+    Type: String
+    Default: kafka.t3.small
+    AllowedValues:
+      - kafka.t3.small
+      - kafka.m5.large
+  SG:
+    Type: String
+    Description: Security Groups
+    Default: {your-security-group}
+  SubnetId1:
+    Type: String
+    Default: {your-subnet-id-1}
+  SubnetId2:
+    Type: String
+    Default: {your-subnet-id-1}
+  MSKStorage:
+    Type: Number
+    Description: MSK Storage
+    Default: 600
+    
+Resources:
+  MSKCluster:
+    Type: 'AWS::MSK::Cluster'
+    Properties:
+      ClusterName:
+        Fn::Sub: kafka-cluster-${EnvName}
+      KafkaVersion: 2.8.0
+      NumberOfBrokerNodes: 4
+      BrokerNodeGroupInfo:
+        BrokerAZDistribution: DEFAULT
+        InstanceType: 
+          Fn::Sub: ${KafkaInstanceType}
+        SecurityGroups: 
+          - !Ref SG
+        StorageInfo:
+          EBSStorageInfo:
+            VolumeSize: !Ref MSKStorage
+        ClientSubnets:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Tags:
+          Name:
+            Fn::Sub: kafka-cluster-${EnvName}
+          Cost: !Ref CostTag
+          Environment: !Ref EnvName
+          
