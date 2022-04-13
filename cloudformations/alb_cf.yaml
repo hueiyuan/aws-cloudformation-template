@@ -1,0 +1,47 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  The application load balance
+
+Parameters:
+  CostTag:
+    Type: String
+    Description: cost team
+    Default: infra
+  SG:
+    Type: String
+    Description: Security Groups
+    Default: {your_security_group}
+  CostTag:
+    Type: String
+    Description: cost team
+    Default: tag_name
+
+Resources:
+  ExampleALB:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Type: application
+      IpAddressType: ipv4
+      Name: 'etl'
+      Scheme: 'internal'
+      SecurityGroups: 
+        - !Ref SG
+        - {your_security_group}
+      Subnets:
+        - {your_subnet_id}
+      Tags:
+        - Key: Cost
+          Value: !Ref CostTag
+
+  DefaultListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+       - Type: 'fixed-response'
+         FixedResponseConfig: 
+          ContentType: 'text/plain'
+          StatusCode: 404
+      LoadBalancerArn: !Ref ExampleALB
+      Port: 80
+      Protocol: 'HTTP'
