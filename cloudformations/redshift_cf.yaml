@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Building aws redshift with cloudformation for etl data monitoring.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: staging
+    Description: Name of an environment, include 'staging', 'production'
+    AllowedValues:
+      - staging
+      - production
+  CreatedDate:
+    Type: String
+    Default: '2021-11-17'
+  SecurityGroup:
+    Type: String
+    Default: {your_security_group}
+    Description: The default security group
+  SubnetId:
+    Type: String
+    Default: {your_subnet_id}
+    Description: the hadoop subnets
+  VpcId:
+    Type: String
+    Default: {your_vpc_id}
+  CostTag:
+    Type: String
+    Default: tag_name
+  NodeType:
+    Description: The type of node to be provisioned
+    Type: String
+    Default: ra3.xlplus
+    AllowedValues:
+      - ra3.xlplus
+      - ra3.4xlarge
+      - ra3.16xlarge
+
+Mappings:
+  EnvCluster:
+    staging:
+      ClusterType: "single-node"
+      NumOfNodes: 1
+    production:
+      ClusterType: "multi-node"
+      NumOfNodes: 2
+
+Resources:
+  RedshiftClusterSubnetGroup:
+    Type: AWS::Redshift::ClusterSubnetGroup
+    Properties:
+      Description: "redshift cluster subnet group"
+      SubnetIds: 
+        - Ref: SubnetId
+
+  Redshift:
+    Type: AWS::Redshift::Cluster
+    Properties:
+      ClusterIdentifier: !Join ['-', [redshift, !Ref EnvName]]
+      ClusterSubnetGroupName: !Ref RedshiftClusterSubnetGroup
+      ClusterType: !FindInMap [EnvCluster, !Ref EnvName, ClusterType]
+      DBName: "dev"
+      MasterUsername: '{{resolve:secretsmanager:etl/redshift:SecretString:username}}'
+      MasterUserPassword: '{{resolve:secretsmanager:etl/redshift:SecretString:password}}'
+      NodeType: !Ref NodeType
+      # NumberOfNodes: !FindInMap [EnvCluster, !Ref EnvName, NumOfNodes] # single node 不需要指定 NumberOfNodes
+      VpcSecurityGroupIds:
+        - Ref: SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [redshift, !Ref EnvName]]
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Environment
+          Value: !Ref EnvName
+        - Key: UsageDate
+          Value: !Ref CreatedDate
