@@ -1,5 +1,5 @@
 # aws-cloudformation-template
-the repo includes my experience about aws cloudformation yaml
+the repo includes my experience about aws cloudformation yaml. If need it, we have to replace value for our real situation.
 
 ## All services
 1. AWS MSK
