@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
-  Building aws redshift with cloudformation for etl data monitoring.
+  Building aws redshift with cloudformation.
 
 Parameters:
   EnvName:
