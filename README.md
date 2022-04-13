@@ -5,9 +5,10 @@ the repo includes my experience about aws cloudformation yaml. If need it, we ha
 1. AWS MSK
 2. AWS EMR
 3. AWS Redsfhit
-4. Redash Dashboard Service
-5. Kafka UI Service
-6. Schema Registry Service
+4. AWS ALB
+5. Redash Dashboard Service
+6. Kafka UI Service
+7. Schema Registry Service
 
 ## Related AWS Cloudformation cli example 
 * Create Cloudformation Stack
