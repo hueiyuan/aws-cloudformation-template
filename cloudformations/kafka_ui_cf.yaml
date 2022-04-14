@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  The cloudformation for kafka ui service that monitoring aws msk service
+
+Parameters:
+  EnvName:
+    Type: String
+    Description: Name of an environment. 'dev', 'staging', 'production' and any name.
+    Default: dev
+    AllowedValues:
+      - staging
+      - production
+  CostTag:
+    Type: String
+    Default: tag_name
+  EC2InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.small
+  SG:
+    Type: String
+    Description: Security Groups
+    Default: {your_security_group_id}
+  SubnetId:
+    Type: String
+    Default: {your_subnet_id}
+  KeyName:
+    Type: String
+    Description: ssh Key
+    Default: {your_aws_pem_key}
+  ServiceType:
+    Type: String
+    Default: kafka-ui
+  VpcId:
+    Type: String
+    Default: {your_vpc_id}
+  PublicDNSHostedZoneId:
+    Type: String
+    Default: {your_dns_zone_id}
+  PrivateALBArn:
+    Type: String
+    Default: {your_alb_arn}
+  PrivateALBDns:
+    Type: String
+    Default: {your_alb_dns}
+  HostedZoneID:
+    Type: String
+    Default: {your_hosted_zone_id}
+  ALBArn:
+    Type: String
+    Default: {arn_your_alb}
+
+Mappings:
+  EnvAMIMap:
+    staging:
+      AMI: {kafka_ui_ami_id}
+    production:
+      AMI: {kafka_ui_ami_id}
+
+Resources:
+  EC2Role:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonMSKFullAccess'
+        - 'arn:aws:iam::aws:policy/CloudWatchFullAccess'
+
+  EC2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: !Join ['-', [!Ref ServiceType, 'instance', !Ref EnvName]]
+      Roles:
+        - !Ref EC2Role
+
+  KafkaUIClientInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: !Ref EC2InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: 
+        - !Ref SG
+      ImageId: !FindInMap [EnvAMIMap, !Ref EnvName, AMI]
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ServiceType, !Ref EnvName, 1]]
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Environment
+          Value: !Ref EnvName
+      UserData: 
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash
+            systemctl restart kafka_ui.service
+            
+
+  ## target group complete
+  KafkaUITargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: !Join ['-', ['kafka-ui', 'ui', !Ref EnvName]]
+      Port: 8888
+      Protocol: HTTP
+      ProtocolVersion: HTTP1
+      TargetType: 'instance'
+      Targets:
+        - Id: !Ref KafkaUIClientInstance
+          Port: 8888
+      VpcId: !Ref VpcId
+      TargetGroupAttributes: 
+        - Key: load_balancing.algorithm.type
+          Value: round_robin
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvName
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Name
+          Value: !Ref ServiceType
+
+  KafkaUIListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref KafkaUITargetGroup
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig: 
+            Values: 
+              - !Ref KafkaUIDNSRecord
+      ListenerArn: !Ref PrivateALBArn
+      Priority: 1
+
+  ## Route53 of kafka ui
+  KafkaUIDNSRecord:
+    Type: 'AWS::Route53::RecordSet'
+    Properties:
+      HostedZoneId: !Ref DNSHostedZoneId
+      Name: !Sub kafka-ui-${EnvName}.xxx.com
+      Type: A
+      AliasTarget:
+        DNSName: !Ref PrivateALBDns
+        EvaluateTargetHealth: false
+        HostedZoneId: !Ref HostedZoneID
