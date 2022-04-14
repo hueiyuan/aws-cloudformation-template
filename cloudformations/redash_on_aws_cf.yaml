@@ -1,0 +1,241 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Redash deploy with cloudformation, and components include ec2, route53, rds and redis.
+
+Parameters:
+  EnvType:
+    Type: String
+    Default: production
+    Description: Name of an environment. 'dev', 'staging', 'production' and any name.
+    AllowedValues:
+      - staging
+      - production
+  RedashSecurityGroup:
+    Type: String
+    Default: {your_security_group}
+    Description: The default security group
+  RedashSubnetId:
+    Type: String
+    Default: {your_subnet_id}
+    Description: the default subnets
+  CostTag:
+    Type: String
+    Default: tag_name
+  RedashKeyName:
+    Type: String
+    Default: {your_aws_pem_key}
+  CreatedDate:
+    Type: String
+    Default: '2021-05'
+  VpcId:
+    Type: String
+    Default: {your_vpc_id}
+  PrivateALBArn:
+    Type: String
+    Default: {your_alb_arn}
+  PublicDNSHostedZoneId:
+    Type: String
+    Default: {your_dns_zone_id}
+  PrivateALBDns:
+    Type: String
+    Default: {your_alb_dns}
+  HostedZoneID:
+    Type: String
+    Default: {your_host_zone_id}
+
+Conditions:
+  IsProdResources: !Equals [!Ref EnvType, production]
+
+Mappings:
+  EnvAMIMap:
+    staging:
+      RedashAMI: {your_redash_ami_id}
+    production:
+      RedashAMI: {your_redash_ami_id}
+
+  EnvDnsMap:
+    staging:
+      DnsName: {your_dns_name.com}
+    production:
+      DnsName: {your_dns_name.com}
+
+Resources:
+  RedashRedis:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: !Join ['-', [redash, redis, !Ref EnvType]]
+      VpcSecurityGroupIds:
+        - !Ref RedashSecurityGroup
+      Engine: redis
+      EngineVersion: 6.x
+      Port: 6379
+      NumCacheNodes: 1
+      CacheNodeType: cache.r6g.large
+      CacheSubnetGroupName: in-default-all-vpc
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [redash, redis, !Ref EnvType]]
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: UsageDate
+          Value: !Ref CreatedDate
+
+  RedashPostgresDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: 20
+      BackupRetentionPeriod: 7
+      DBInstanceClass: db.t2.micro
+      DBInstanceIdentifier: !Join ['-', [redash, !Ref EnvType]]
+      DBName: redash
+      DBSubnetGroupName: default-postgresql
+      Engine: postgres
+      EngineVersion: 9.6.5
+      VPCSecurityGroups:
+        - !Ref RedashSecurityGroup
+      MasterUsername: {admin_name}
+      MasterUserPassword: {admin_pwd}
+      MultiAZ: false
+      PubliclyAccessible: False
+      StorageType: gp2
+
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [redash, rds, postgres, !Ref EnvType]]
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: UsageDate
+          Value: !Ref CreatedDate
+
+  RedashInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'ec2.amazonaws.com'
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonRedshiftReadOnlyAccess'
+        - 'arn:aws:iam::aws:policy/CloudWatchFullAccess'
+      Policies:
+        - PolicyName: RedashRDSPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+                - rds:*
+              Resource: 
+                - !Sub 'arn:aws:rds:${AWS::Region}:{account_id}:db:redash-${EnvType}'
+
+        - PolicyName: RedashRedisPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+                - elasticache:*
+              Resource: 
+                - !Sub 'arn:aws:elasticache:${AWS::Region}:{account_id}:cluster:redash-${EnvType}'
+
+  RedashInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Join [ '-', [redash, !Ref EnvType, InstanceProfile] ]
+      Roles:
+        - !Ref RedashInstanceRole
+
+  RedashInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !If [IsProdResources, t3.medium, t3.small]
+      IamInstanceProfile: !Ref RedashInstanceProfile
+      ImageId: !FindInMap
+        - EnvAMIMap
+        - !Ref EnvType
+        - RedashAMI
+      KeyName: !Ref RedashKeyName
+      SecurityGroupIds:
+        - !Ref RedashSecurityGroup
+      SubnetId: !Ref RedashSubnetId
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: '10'
+            VolumeType: gp2
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [cf, redash, !Ref EnvType]]
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: UsageDate
+          Value: !Ref CreatedDate
+      UserData:
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash
+            cd /opt/redash && docker-compose run --rm server create_db
+
+  ## Redash Target Group
+  RedashTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: !Join ['-', [cf, redash, !Ref EnvType]]
+      Port: 80
+      Protocol: HTTP
+      ProtocolVersion: HTTP1
+      TargetType: 'instance'
+      Targets:
+        - Id: !Ref RedashInstance
+          Port: 80
+      VpcId: !Ref VpcId
+      TargetGroupAttributes: 
+        - Key: load_balancing.algorithm.type
+          Value: round_robin
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Name
+          Value: !Join ['-', [cf, redash, !Ref EnvType]]
+
+  RedashListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref RedashTargetGroup
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig: 
+            Values: 
+              - !Ref RedashDNSRecord
+      ListenerArn: !Ref PrivateALBArn
+      Priority: 5
+
+  ## Route53
+  RedashDNSRecord:
+    Type: 'AWS::Route53::RecordSet'
+    Properties:
+      HostedZoneId: !Ref PublicDNSHostedZoneId
+      Name: !FindInMap [EnvDnsMap, !Ref EnvType, DnsName]
+      Type: A
+      AliasTarget:
+        DNSName: !Ref PrivateALBDns
+        EvaluateTargetHealth: false
+        HostedZoneId: !Ref HostedZoneID
