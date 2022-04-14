@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  The cloudformation for multiple scheam registry service and connect AWS MSK.
+
+Parameters:
+  EnvName:
+    Type: String
+    Description: Name of an environment. 'dev', 'staging', 'production' and any name.
+    Default: dev
+    AllowedValues:
+      - staging
+      - production
+  CostTag:
+    Type: String
+    Default: tag_name
+  EC2InstanceType:
+    Type: String
+    Default: c5.xlarge
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.xlarge
+      - c5.xlarge
+  SG:
+    Type: String
+    Description: Security Groups
+    Default: {your_security_group}
+  SubnetId:
+    Type: String
+    Default: {your_subnet_id}
+    
+  KeyName:
+    Type: String
+    Description: ssh Key
+    Default: {your_aws_pem}
+  ServiceType:
+    Type: String
+    Default: schema-registry
+  VpcId:
+    Type: String
+    Default: {your_vpc_id}
+  SRALBArn:
+    Type: String
+    Default: {your_alb_arn}
+  SRALBDnsName:
+    Type: String
+    Default: {your_alb_dns}
+  SRALBHostZone:
+    Type: String
+    Default: {your_hosted_zone_id}
+  SRListenerARN:
+    Type: String
+    Default: {your_listener_rule_arn}
+
+Mappings:
+  EnvAMIMap:
+    staging:
+      AMI: {your_schema_regisry_ami_id}
+    production:
+      AMI: {your_schema_regisry_ami_id}
+      
+Resources:
+  EC2Role:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonMSKFullAccess'
+        - 'arn:aws:iam::aws:policy/CloudWatchFullAccess'
+
+  EC2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: !Join ['-', [!Ref ServiceType, 'instance', !Ref EnvName]]
+      Roles:
+        - !Ref EC2Role
+
+  SchemaRegistryClientInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: !Ref EC2InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: 
+        - !Ref SG
+      ImageId: !FindInMap [EnvAMIMap, !Ref EnvName, AMI]
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ServiceType, !Ref EnvName, 1]]
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Environment
+          Value: !Ref EnvName
+      UserData: 
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash
+            cp /var/lib/cloud/data/instance-id /var/tmp/aws-mon/instance-id
+            systemctl start schema_regisry.service
+            sh /home/ubuntu/schema-registry-server/schema-registry-and-ui.sh
+  
+  SchemaRegistryTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: !Join ['-', [!Ref ServiceType, !Ref EnvName]]
+      Port: 8080
+      Protocol: HTTP
+      ProtocolVersion: HTTP1
+      TargetType: 'instance'
+      Targets:
+        - Id: !Ref SchemaRegistryClientInstance
+          Port: 8080
+      VpcId: !Ref VpcId
+      TargetGroupAttributes: 
+        - Key: load_balancing.algorithm.type
+          Value: least_outstanding_requests
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvName
+        - Key: Cost
+          Value: !Ref CostTag
+        - Key: Name
+          Value: !Ref ServiceType
+
+  SchemaRegistryListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref SchemaRegistryTargetGroup
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig: 
+            Values: 
+              - !Ref SchemaRegistryDNSRecord
+      ListenerArn: !Ref SRListenerARN
+      Priority: 1
+
+  ## Route53 of schema registry server
+  SchemaRegistryDNSRecord:
+    Type: 'AWS::Route53::RecordSet'
+    Properties:
+      HostedZoneId: !Ref SRALBHostZone
+      Name: !Sub schema-registry-${EnvName}.xxxx.com
+      Type: A
+      AliasTarget:
+        DNSName: !Ref SRALBDnsName
+        EvaluateTargetHealth: false
+        HostedZoneId: !Ref SRALBHostZone
